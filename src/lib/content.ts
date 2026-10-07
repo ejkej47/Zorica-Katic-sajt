@@ -1,4 +1,6 @@
 import source from "../../src/data/wordpress.json";
+import blogMedia from "../data/blog-media-map.json";
+import blogCovers from "../data/blog-cover-map.json";
 
 export type WpEntry = {
   title: string;
@@ -12,10 +14,57 @@ export type WpEntry = {
 };
 
 const entries = source as WpEntry[];
+const blogMediaMap = blogMedia as Record<string, string>;
+const blogCoverMap = blogCovers as Record<string, { src: string; width: number; height: number }>;
+const unavailableBlogImages = new Set([
+  "https://zoricakatic.com/wp-content/uploads/2021/02/Flex-prva-fotka-1024x576.jpg",
+]);
+const blogMediaByPath = new Map(
+  Object.entries(blogMediaMap).map(([url, localPath]) => [new URL(url).pathname, localPath]),
+);
+
+function localizeImageUrl(url: string) {
+  if (!url) return url;
+  if (blogMediaMap[url]) return blogMediaMap[url];
+  try {
+    return blogMediaByPath.get(new URL(url, "https://zoricakatic.com").pathname) ?? url;
+  } catch {
+    return url;
+  }
+}
+
+function localizeWordPressImages(html: string) {
+  return html.replace(/<img\b[^>]*>/gi, (imageTag) => {
+    const sourceUrl = imageTag.match(/\bsrc=(["'])([^"']+)\1/i)?.[2];
+    if (sourceUrl && unavailableBlogImages.has(sourceUrl)) return "";
+    return imageTag.replace(/\bsrc=(["'])([^"']+)\1/i, (_match, quote: string, url: string) =>
+      `src=${quote}${localizeImageUrl(url)}${quote}`,
+    );
+  });
+}
+
 export const posts = entries
   .filter((entry) => entry.type === "post")
+  .map((post) => ({
+    ...post,
+    image: localizeImageUrl(post.image),
+    content: localizeWordPressImages(post.content),
+  }))
   .sort((a, b) => b.date.localeCompare(a.date));
 export const pages = entries.filter((entry) => entry.type === "page");
+
+export function getPostImage(post: WpEntry) {
+  const originalBlogCover = blogCoverMap[post.slug];
+  if (originalBlogCover) return originalBlogCover.src;
+  if (post.image.startsWith("/images/")) return post.image;
+  const localContentImage = post.content.match(/<img\b[^>]*\bsrc=["'](\/images\/[^"']+)["']/i)?.[1];
+  return localContentImage ?? post.image;
+}
+
+export function getPostImageDimensions(post: WpEntry) {
+  const cover = blogCoverMap[post.slug];
+  return cover ? { width: cover.width, height: cover.height } : undefined;
+}
 
 export function getPage(slug: string) {
   return pages.find((page) => page.slug === slug);
@@ -51,8 +100,8 @@ function fromWordPress(post: WordPressPost): WpEntry {
     date: post.date,
     title: stripTags(post.title?.rendered ?? ""),
     excerpt,
-    content,
-    image,
+    content: localizeWordPressImages(content),
+    image: localizeImageUrl(image),
     categories,
   };
 }
